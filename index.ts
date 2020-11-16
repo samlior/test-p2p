@@ -5,12 +5,10 @@ const MPLEX = require('libp2p-mplex');
 const Multiaddr = require('multiaddr')
 const PeerId = require('peer-id')
 const pipe = require('it-pipe')
-const lp = require('it-length-prefixed')
-// const Bootstrap = require('libp2p-bootstrap')
 const KadDHT = require('libp2p-kad-dht')
+// const Bootstrap = require('libp2p-bootstrap')
 
 import process from 'process';
-
 import prompts from 'prompts';
 
 type PeerQueue = {
@@ -107,7 +105,7 @@ const startPrompts = async (node) => {
         else if (arr[0] === 'sendmsg' || arr[0] === 's') {
             let info = peerInfoMap.get(arr[1])
             if (info) {
-                info[1].notify('echo', arr[1])
+                info[1].notify('echo', arr[2])
             }
             else {
                 console.warn('$ Can not find peer')
@@ -190,7 +188,12 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
                     let queue = makeMsgQueue()
                     let jsonrpc = makeJSONRPC(queue.addToQueue)
                     peerInfoMap.set(id, [queue, jsonrpc])
-                    pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
+                    pipe(queue.makeAsyncGenerator(), stream.sink);
+                    pipe(stream.source, async (source) => {
+                        for await (let data of source) {
+                            jsonrpc.receiveMsg(data, handlRPCMsg.bind(undefined, node, [queue, jsonrpc]))
+                        }
+                    })
                 }).catch((err) => {
                     console.error('\n$ Error, newStream', err.message)
                 })
@@ -214,33 +217,19 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
     await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         console.log('\n$ Receive', protocol, 'from', id)
-
-        if (!peerInfoMap.has(id)) {
-            console.log('\n$ don not exists', id)
-            connection.newStream('/wuhu').then(({ stream }) => {
-                let queue = makeMsgQueue()
-                let jsonrpc = makeJSONRPC(queue.addToQueue)
-                peerInfoMap.set(id, [queue, jsonrpc])
-                pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
-                pipe(stream.source, lp.decode(), async (dataStream) => {
-                    for await (let data of dataStream) {
-                        jsonrpc.receiveMsg(data, handlRPCMsg.bind(node, [queue, jsonrpc]))
-                    }
-                })
-            }).catch((err) => {
-                console.error('\n$ Error, newStream', err.message)
-            })
+        let info = peerInfoMap.get(id)
+        if (!info) {
+            let queue = makeMsgQueue()
+            let jsonrpc = makeJSONRPC(queue.addToQueue)
+            peerInfoMap.set(id, [queue, jsonrpc])
+            info = [queue, jsonrpc] 
         }
-        else {
-            console.log('\n$ already exists', id)
-            let info = peerInfoMap.get(id)
-            let receiveMsg = info[1].receiveMsg
-            pipe(stream.source, lp.decode(), async (dataStream) => {
-                for await (let data of dataStream) {
-                    receiveMsg(data, handlRPCMsg.bind(node, info))
-                }
-            })
-        }
+        pipe(info[0].makeAsyncGenerator(), stream.sink);
+        pipe(stream.source, async (source) => {
+            for await (let data of source) {
+                info[1].receiveMsg(data, handlRPCMsg.bind(undefined, node, info))
+            }
+        })
     })
     
     // start libp2p
@@ -371,4 +360,4 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
     }
 
     return { request, notify, receiveMsg, abort }
-}
+} 
