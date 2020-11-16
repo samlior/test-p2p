@@ -18,9 +18,9 @@ type PeerQueue = {
 }
 
 type PeerJSONRPC = {
-    notify: (method: string, params: any) => void,
-    request: (method: string, params: any, timeout?: number) => Promise<any>,
-    receiveMsg: (data: any, handleMsg: (method: string, params: any) => Promise<any> | any) => void,
+    notify: (method: string, params?: any) => void,
+    request: (method: string, params?: any, timeout?: number) => Promise<any>,
+    receiveMsg: (data: any, handleMsg: (method: string, params?: any) => Promise<any> | any) => void,
     abort: () => void
 }
 
@@ -102,6 +102,16 @@ const startPrompts = async (node) => {
                 console.log(peerIdString)
             }
         }
+        else if (arr[0] === 'fetch') {
+            let info = peerInfoMap.get(arr[1])
+            if (info) {
+                let results = await info[1].request('ls')
+                console.log('fetch result:', results)
+            }
+            else {
+                console.warn('$ Can not find peer')
+            }
+        }
         else if (arr[0] === 'sendmsg' || arr[0] === 's') {
             let info = peerInfoMap.get(arr[1])
             if (info) {
@@ -120,7 +130,8 @@ const startPrompts = async (node) => {
 
 /////////////////////////////////////////
 
-const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: string, params: any) => {
+const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: string, params?: any) => {
+    console.log('\n$ Receive request, method', method)
     switch (method) {
         case 'echo':
             console.log('\n$ Receive echo message:', JSON.stringify(params))
@@ -150,22 +161,20 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
             transport: [WebSockets],
             connEncryption: [NOISE],
             streamMuxer: [MPLEX],
-            // peerDiscovery: [Bootstrap],
-            dht: KadDHT
+            dht: KadDHT,
+            // peerDiscovery: [Bootstrap]
         },
         config:{
+            dht: {
+                enabled: true
+            },
             // peerDiscovery: {
             //     bootstrap: {
             //         interval: 60e3,
             //         enabled: true,
-            //         list: [
-            //             addr
-            //         ]
+            //         list: ['...']
             //     }
-            // },
-            dht: {
-                enabled: true
-            }
+            // }
         }
     })
 
@@ -293,7 +302,7 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
         reqQueueMap.clear()
     }
 
-    const request = (method: string, params: any, timeout = 5000) => {
+    const request = (method: string, params?: any, timeout = 5000) => {
         let idString = `${++id}`
         let req = {
             jsonrpc: "2.0",
@@ -312,25 +321,21 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
         })
     }
 
-    const _notify = (id: string, params: any, method?: string) => {
-        let req = method ? {
+    const _notify = (id: string, method?: string, params?: any) => {
+        let req = {
             jsonrpc: "2.0",
             id,
             method,
-            params
-        }: {
-            jsonrpc: "2.0",
-            id,
             params
         }
         addToQueue(JSON.stringify(req))
     }
 
-    const notify = (method: string, params: any) => {
-        _notify(`${++id}`, params, method)
+    const notify = (method: string, params?: any) => {
+        _notify(`${++id}`, method, params)
     }
 
-    const receiveMsg = (data: any, handleMsg: (method: string, params: any) => Promise<any> | any) => {
+    const receiveMsg = (data: any, handleMsg: (method: string, params?: any) => Promise<any> | any) => {
         try {
             let obj = JSON.parse(data)
             let info = reqQueueMap.get(obj.id)
@@ -348,7 +353,7 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
                     }
                     result.then((params => {
                         if (params !== undefined) {
-                            _notify(obj.id, params)
+                            _notify(obj.id, undefined, params)
                         }
                     }))
                 }
