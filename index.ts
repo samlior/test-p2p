@@ -89,8 +89,8 @@ const startPrompts = async (node) => {
             }
         }
         else if (arr[0] === 'ls') {
-            for (let [peerIdString, peer] of node.peerStore.peers.entries()) {
-                console.log(`id: ${peerIdString}, peer: `, peer)
+            for (let [peerIdString] of node.peerStore.peers.entries()) {
+                console.log(peerIdString)
             }
         }
         else if (arr[0] === 'sendmsg' || arr[0] === 's') {
@@ -179,12 +179,23 @@ const startPrompts = async (node) => {
 
     // Handle messages for the protocol
     await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
-        console.log('\n$ Receive', protocol, 'from', connection.id)
+        let id = connection.remotePeer._idB58String
+        console.log('\n$ Receive', protocol, 'from', id)
         pipe(stream.source, lp.decode(), async (dataStream) => {
             for await (let data of dataStream) {
                 console.log('\n$ Receive message', data.toString())
             }
         })
+
+        if (!peerQueueMap.has(id) && !connectQueueSet.has(id)) {
+            connection.newStream('/wuhu').then(({ stream }) => {
+                let { addToQueue, makeAsyncGenerator, abort } = makeMsgQueue()
+                peerQueueMap.set(id, { addToQueue, abort })
+                pipe(makeAsyncGenerator(), lp.encode(), stream.sink);
+            }).catch((err) => {
+                console.error('\n$ Error, newStream', err.message)
+            })
+        }
     })
     
     // start libp2p
