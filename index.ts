@@ -22,7 +22,7 @@ type PeerQueue = {
 type PeerJSONRPC = {
     notify: (method: string, params: any) => void,
     request: (method: string, params: any, timeout?: number) => Promise<any>,
-    receiveMsg: (data: any, handleMsg: (method: string, params: any) => void) => void,
+    receiveMsg: (data: any, handleMsg: (method: string, params: any) => Promise<any> | any) => void,
     abort: () => void
 }
 
@@ -122,6 +122,24 @@ const startPrompts = async (node) => {
 
 /////////////////////////////////////////
 
+const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: string, params: any) => {
+    switch (method) {
+        case 'echo':
+            console.log('\n$ Receive echo message:', JSON.stringify(params))
+            break;
+        case 'ls':
+            let arr = []
+            for (let [peerIdString] of node.peerStore.peers.entries()) {
+                arr.push(peerIdString)
+            }
+            return arr;
+        default:
+            console.log('\n$ Receive unkonw message:', JSON.stringify(params))
+    }
+}
+
+/////////////////////////////////////////
+
 (async () => {
     const peerkey = await PeerId.create({ bits: 1024, keyType: 'Ed25519' })
 
@@ -196,7 +214,9 @@ const startPrompts = async (node) => {
     await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         console.log('\n$ Receive', protocol, 'from', id)
+
         if (!peerInfoMap.has(id)) {
+            console.log('\n$ don not exists', id)
             connection.newStream('/wuhu').then(({ stream }) => {
                 let queue = makeMsgQueue()
                 let jsonrpc = makeJSONRPC(queue.addToQueue)
@@ -204,9 +224,7 @@ const startPrompts = async (node) => {
                 pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
                 pipe(stream.source, lp.decode(), async (dataStream) => {
                     for await (let data of dataStream) {
-                        jsonrpc.receiveMsg(data, (method: string, params: any) => {
-                            // ...
-                        })
+                        jsonrpc.receiveMsg(data, handlRPCMsg.bind(node, [queue, jsonrpc]))
                     }
                 })
             }).catch((err) => {
@@ -214,12 +232,12 @@ const startPrompts = async (node) => {
             })
         }
         else {
-            let receiveMsg = peerInfoMap.get(id)[1].receiveMsg
+            console.log('\n$ already exists', id)
+            let info = peerInfoMap.get(id)
+            let receiveMsg = info[1].receiveMsg
             pipe(stream.source, lp.decode(), async (dataStream) => {
                 for await (let data of dataStream) {
-                    receiveMsg(data, (method: string, params: any) => {
-                        // ...
-                    })
+                    receiveMsg(data, handlRPCMsg.bind(node, info))
                 }
             })
         }
@@ -305,18 +323,25 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
         })
     }
 
-    const notify = (method: string, params: any) => {
-        let idString = `${++id}`
-        let req = {
+    const _notify = (id: string, params: any, method?: string) => {
+        let req = method ? {
             jsonrpc: "2.0",
-            id: idString,
+            id,
             method,
+            params
+        }: {
+            jsonrpc: "2.0",
+            id,
             params
         }
         addToQueue(JSON.stringify(req))
     }
 
-    const receiveMsg = (data: any, handleMsg: (method: string, params: any) => void) => {
+    const notify = (method: string, params: any) => {
+        _notify(`${++id}`, params, method)
+    }
+
+    const receiveMsg = (data: any, handleMsg: (method: string, params: any) => Promise<any> | any) => {
         try {
             let obj = JSON.parse(data)
             let info = reqQueueMap.get(obj.id)
@@ -327,7 +352,17 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
                 reqQueueMap.delete(obj.id)
             }
             else {
-                handleMsg(obj.method, obj.params)
+                let result = handleMsg(obj.method, obj.params)
+                if (result !== undefined) {
+                    if (result.then === undefined) {
+                        result = Promise.resolve(result)
+                    }
+                    result.then((params => {
+                        if (params !== undefined) {
+                            _notify(obj.id, params)
+                        }
+                    }))
+                }
             }
         }
         catch (err) {
