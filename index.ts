@@ -107,7 +107,7 @@ const startPrompts = async (node) => {
         else if (arr[0] === 'sendmsg' || arr[0] === 's') {
             let info = peerInfoMap.get(arr[1])
             if (info) {
-                // info.request()
+                info[1].notify('echo', arr[1])
             }
             else {
                 console.warn('$ Can not find peer')
@@ -167,14 +167,16 @@ const startPrompts = async (node) => {
 
         if (connectQueueSet.has(id)) {
             connectQueueSet.delete(id)
-            connection.newStream('/wuhu').then(({ stream }) => {
-                let queue = makeMsgQueue()
-                let jsonrpc = makeJSONRPC(queue.addToQueue)
-                peerInfoMap.set(id, [queue, jsonrpc])
-                pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
-            }).catch((err) => {
-                console.error('\n$ Error, newStream', err.message)
-            })
+            if (!peerInfoMap.has(id)) {
+                connection.newStream('/wuhu').then(({ stream }) => {
+                    let queue = makeMsgQueue()
+                    let jsonrpc = makeJSONRPC(queue.addToQueue)
+                    peerInfoMap.set(id, [queue, jsonrpc])
+                    pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
+                }).catch((err) => {
+                    console.error('\n$ Error, newStream', err.message)
+                })
+            }
         }
     })
     
