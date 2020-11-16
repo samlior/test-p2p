@@ -13,10 +13,20 @@ import process from 'process';
 
 import prompts from 'prompts';
 
-const peerQueueMap = new Map<string, {
+type PeerQueue = {
     abort: () => void,
-    addToQueue: (msg: string) => void
-}>()
+    addToQueue: (msg: string) => void,
+    makeAsyncGenerator: () => AsyncGenerator<any, void, unknown>,
+}
+
+type PeerJSONRPC = {
+    notify: (method: string, params: any) => void,
+    request: (method: string, params: any, timeout?: number) => Promise<any>,
+    receiveMsg: (data: any, handleMsg: (method: string, params: any) => void) => void,
+    abort: () => void
+}
+
+const peerInfoMap = new Map<string, [PeerQueue, PeerJSONRPC]>()
 
 const connectQueueSet = new Set<string>()
 
@@ -80,10 +90,11 @@ const startPrompts = async (node) => {
                 await node.hangUp(PeerId.createFromB58String(arr[1]))
             }
             catch (err) {
-                let info = peerQueueMap.get(arr[1])
+                let info = peerInfoMap.get(arr[1])
                 if (info) {
-                    info.abort()
-                    peerQueueMap.delete(arr[1])
+                    info[0].abort()
+                    info[1].abort()
+                    peerInfoMap.delete(arr[1])
                 }
                 console.error('\n$ Error, hangUp', err)
             }
@@ -94,9 +105,9 @@ const startPrompts = async (node) => {
             }
         }
         else if (arr[0] === 'sendmsg' || arr[0] === 's') {
-            let info = peerQueueMap.get(arr[1])
+            let info = peerInfoMap.get(arr[1])
             if (info) {
-                info.addToQueue(arr[2])
+                // info.request()
             }
             else {
                 console.warn('$ Can not find peer')
@@ -157,9 +168,10 @@ const startPrompts = async (node) => {
         if (connectQueueSet.has(id)) {
             connectQueueSet.delete(id)
             connection.newStream('/wuhu').then(({ stream }) => {
-                let { addToQueue, makeAsyncGenerator, abort } = makeMsgQueue()
-                peerQueueMap.set(id, { addToQueue, abort })
-                pipe(makeAsyncGenerator(), lp.encode(), stream.sink);
+                let queue = makeMsgQueue()
+                let jsonrpc = makeJSONRPC(queue.addToQueue)
+                peerInfoMap.set(id, [queue, jsonrpc])
+                pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
             }).catch((err) => {
                 console.error('\n$ Error, newStream', err.message)
             })
@@ -170,10 +182,11 @@ const startPrompts = async (node) => {
         let id = connection.remotePeer._idB58String
         console.log('\n$ Disconnected to', id)
 
-        let info = peerQueueMap.get(id)
+        let info = peerInfoMap.get(id)
         if (info) {
-            info.abort()
-            peerQueueMap.delete(id)
+            info[0].abort()
+            info[1].abort()
+            peerInfoMap.delete(id)
         }
     })
 
@@ -181,26 +194,38 @@ const startPrompts = async (node) => {
     await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         console.log('\n$ Receive', protocol, 'from', id)
-        pipe(stream.source, lp.decode(), async (dataStream) => {
-            for await (let data of dataStream) {
-                console.log('\n$ Receive message', data.toString())
-            }
-        })
-
-        if (!peerQueueMap.has(id) && !connectQueueSet.has(id)) {
+        if (!peerInfoMap.has(id)) {
             connection.newStream('/wuhu').then(({ stream }) => {
-                let { addToQueue, makeAsyncGenerator, abort } = makeMsgQueue()
-                peerQueueMap.set(id, { addToQueue, abort })
-                pipe(makeAsyncGenerator(), lp.encode(), stream.sink);
+                let queue = makeMsgQueue()
+                let jsonrpc = makeJSONRPC(queue.addToQueue)
+                peerInfoMap.set(id, [queue, jsonrpc])
+                pipe(queue.makeAsyncGenerator(), lp.encode(), stream.sink);
+                pipe(stream.source, lp.decode(), async (dataStream) => {
+                    for await (let data of dataStream) {
+                        jsonrpc.receiveMsg(data, (method: string, params: any) => {
+                            // ...
+                        })
+                    }
+                })
             }).catch((err) => {
                 console.error('\n$ Error, newStream', err.message)
+            })
+        }
+        else {
+            let receiveMsg = peerInfoMap.get(id)[1].receiveMsg
+            pipe(stream.source, lp.decode(), async (dataStream) => {
+                for await (let data of dataStream) {
+                    receiveMsg(data, (method: string, params: any) => {
+                        // ...
+                    })
+                }
             })
         }
     })
     
     // start libp2p
     await node.start()
-    console.log('Libp2p has started')
+    console.log('Libp2p has started', peerkey.toB58String())
     node.multiaddrs.forEach((ma) => {
         console.log(ma.toString() + '/p2p/' + peerkey.toB58String())
     })
@@ -241,8 +266,72 @@ const makeMsgQueue = () => {
             yield queue.length > 0 ? Promise.resolve(queue.shift()) : new Promise(r => { queueResolve = r })
         }
     }
-
+    
     return { addToQueue, makeAsyncGenerator, abort }
 }
 
 /////////////////////////////////////////
+
+const makeJSONRPC = (addToQueue: (msg: string) => void) => {
+    const reqQueueMap = new Map<string, [(str: any) => void, (reason?: any) => void, any]>()
+    let id = 0
+
+    const abort = () => {
+        for (let [idString, [resolve, reject, handler]] of reqQueueMap) {
+            clearTimeout(handler)
+            reject(new Error('jsonrpc abort'))
+        }
+        reqQueueMap.clear()
+    }
+
+    const request = (method: string, params: any, timeout = 5000) => {
+        let idString = `${++id}`
+        let req = {
+            jsonrpc: "2.0",
+            id: idString,
+            method,
+            params
+        }
+        addToQueue(JSON.stringify(req))
+        return new Promise<any>((resolve, reject) => {
+            reqQueueMap.set(idString, [resolve, reject, setTimeout(() => {
+                if (reqQueueMap.has(idString)) {
+                    reqQueueMap.delete(idString)
+                    reject(new Error('jsonrpc timeout'))
+                }
+            }, timeout)])
+        })
+    }
+
+    const notify = (method: string, params: any) => {
+        let idString = `${++id}`
+        let req = {
+            jsonrpc: "2.0",
+            id: idString,
+            method,
+            params
+        }
+        addToQueue(JSON.stringify(req))
+    }
+
+    const receiveMsg = (data: any, handleMsg: (method: string, params: any) => void) => {
+        try {
+            let obj = JSON.parse(data)
+            let info = reqQueueMap.get(obj.id)
+            if (info) {
+                let [resolve, reject, handler] = info
+                clearTimeout(handler)
+                resolve(obj.params)
+                reqQueueMap.delete(obj.id)
+            }
+            else {
+                handleMsg(obj.method, obj.params)
+            }
+        }
+        catch (err) {
+            console.error('\n$ Error, handleMsg', err)
+        }
+    }
+
+    return { request, notify, receiveMsg, abort }
+}
