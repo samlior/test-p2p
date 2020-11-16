@@ -105,8 +105,13 @@ const startPrompts = async (node) => {
         else if (arr[0] === 'fetch') {
             let info = peerInfoMap.get(arr[1])
             if (info) {
-                let results = await info[1].request('ls')
-                console.log('fetch result:', results)
+                try {
+                    let results = await info[1].request('ls')
+                    console.log('fetch result:', results)
+                }
+                catch (err) {
+                    console.error('$ Error, fetch', err)
+                }
             }
             else {
                 console.warn('$ Can not find peer')
@@ -194,9 +199,7 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
             connectQueueSet.delete(id)
             if (!peerInfoMap.has(id)) {
                 connection.newStream('/wuhu').then(({ stream }) => {
-                    let queue = makeMsgQueue()
-                    let jsonrpc = makeJSONRPC(queue.addToQueue)
-                    peerInfoMap.set(id, [queue, jsonrpc])
+                    let [queue, jsonrpc] = initPeer(id)
                     pipe(queue.makeAsyncGenerator(), stream.sink);
                     pipe(stream.source, async (source) => {
                         for await (let data of source) {
@@ -228,10 +231,7 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
         console.log('\n$ Receive', protocol, 'from', id)
         let info = peerInfoMap.get(id)
         if (!info) {
-            let queue = makeMsgQueue()
-            let jsonrpc = makeJSONRPC(queue.addToQueue)
-            peerInfoMap.set(id, [queue, jsonrpc])
-            info = [queue, jsonrpc] 
+            info = initPeer(id)
         }
         pipe(info[0].makeAsyncGenerator(), stream.sink);
         pipe(stream.source, async (source) => {
@@ -262,19 +262,14 @@ const makeMsgQueue = () => {
     }
 
     const addToQueue = (msg: string) => {
-        if (Array.isArray(msg)) {
-            msg.forEach(e => addToQueue(e))
+        if (queueResolve) {
+            queueResolve(msg)
+            queueResolve = undefined
         }
         else {
-            if (queueResolve) {
-                queueResolve(msg)
-                queueResolve = undefined
-            }
-            else {
-                queue.push(msg)
-                if (queue.length > 10) {
-                    queue.shift()
-                }
+            queue.push(msg)
+            if (queue.length > 10) {
+                queue.shift()
             }
         }
     }
@@ -291,15 +286,15 @@ const makeMsgQueue = () => {
 /////////////////////////////////////////
 
 const makeJSONRPC = (addToQueue: (msg: string) => void) => {
-    const reqQueueMap = new Map<string, [(str: any) => void, (reason?: any) => void, any]>()
     let id = 0
+    const requestMap = new Map<string, [(params: any) => void, (reason?: any) => void, any]>()
 
     const abort = () => {
-        for (let [idString, [resolve, reject, handler]] of reqQueueMap) {
+        for (let [idString, [resolve, reject, handler]] of requestMap) {
             clearTimeout(handler)
             reject(new Error('jsonrpc abort'))
         }
-        reqQueueMap.clear()
+        requestMap.clear()
     }
 
     const request = (method: string, params?: any, timeout = 5000) => {
@@ -312,9 +307,9 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
         }
         addToQueue(JSON.stringify(req))
         return new Promise<any>((resolve, reject) => {
-            reqQueueMap.set(idString, [resolve, reject, setTimeout(() => {
-                if (reqQueueMap.has(idString)) {
-                    reqQueueMap.delete(idString)
+            requestMap.set(idString, [resolve, reject, setTimeout(() => {
+                if (requestMap.has(idString)) {
+                    requestMap.delete(idString)
                     reject(new Error('jsonrpc timeout'))
                 }
             }, timeout)])
@@ -338,12 +333,12 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
     const receiveMsg = (data: any, handleMsg: (method: string, params?: any) => Promise<any> | any) => {
         try {
             let obj = JSON.parse(data)
-            let info = reqQueueMap.get(obj.id)
+            let info = requestMap.get(obj.id)
             if (info) {
                 let [resolve, reject, handler] = info
                 clearTimeout(handler)
                 resolve(obj.params)
-                reqQueueMap.delete(obj.id)
+                requestMap.delete(obj.id)
             }
             else {
                 let result = handleMsg(obj.method, obj.params)
@@ -365,4 +360,13 @@ const makeJSONRPC = (addToQueue: (msg: string) => void) => {
     }
 
     return { request, notify, receiveMsg, abort }
-} 
+}
+
+/////////////////////////////////////////
+
+const initPeer = (id: string): [PeerQueue, PeerJSONRPC] => {
+    let queue = makeMsgQueue()
+    let jsonrpc = makeJSONRPC(queue.addToQueue)
+    peerInfoMap.set(id, [queue, jsonrpc])
+    return [queue, jsonrpc]
+}
