@@ -139,7 +139,7 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
     console.log('\n$ Receive request, method', method)
     switch (method) {
         case 'echo':
-            console.log('\n$ Receive echo message:', JSON.stringify(params))
+            console.log('\n$ Receive echo message:', params)
             break;
         case 'ls':
             let arr = []
@@ -148,7 +148,7 @@ const handlRPCMsg = (node, [queue, jsonrpc]: [PeerQueue, PeerJSONRPC], method: s
             }
             return arr;
         default:
-            console.log('\n$ Receive unkonw message:', JSON.stringify(params))
+            console.log('\n$ Receive unkonw message:', params)
     }
 }
 
