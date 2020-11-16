@@ -31,77 +31,80 @@ const startPrompts = async (node) => {
         if (response.cmd === undefined) {
             process.exit(0)
         }
-        else {
-            let arr = (response.cmd as string).split(' ')
-            if (!Array.isArray(arr)) {
+
+        let arr = (response.cmd as string).split(' ')
+        if (!Array.isArray(arr)) {
+            console.warn('$ Invalid command')
+            continue
+        }
+
+        if (arr[0] === 'addpeer' || arr[0] === 'a') {
+            node.peerStore.addressBook.set(PeerId.createFromB58String(arr[1]), [new Multiaddr(arr[2])])
+        }
+        else if (arr[0] === 'findpeer' || arr[0] === 'f') {
+            try {
+                connectQueueSet.add(arr[1])
+                const peer = await node.peerRouting.findPeer(PeerId.createFromB58String(arr[1]))
+
+                console.log('Found it, multiaddrs are:')
+                peer.multiaddrs.forEach((ma) => console.log(`${ma.toString()}/p2p/${peer.id.toB58String()}`))
+            }
+            catch (err) {
+                connectQueueSet.delete(arr[1])
+                console.error('\n$ Error, findPeer', err)
+            }
+        }
+        else if (arr[0] === 'connectpeer' || arr[0] === 'c') {
+            let pos = arr[1].lastIndexOf('/')
+            if (pos === -1) {
+                console.warn('$ Invalid command')
+                continue
+            }
+            let id = arr[1].substr(pos + 1)
+            if (id === undefined) {
                 console.warn('$ Invalid command')
                 continue
             }
 
-            if (arr[0] === 'addpeer' || arr[0] === 'a') {
-                node.peerStore.addressBook.set(PeerId.createFromB58String(arr[1]), [new Multiaddr(arr[2])])
+            try {
+                connectQueueSet.add(id)
+                await node.dial(arr[1])
             }
-            else if (arr[0] === 'findpeer' || arr[0] === 'f') {
-                try {
-                    connectQueueSet.add(arr[1])
-                    const peer = await node.peerRouting.findPeer(PeerId.createFromB58String(arr[1]))
-
-                    console.log('Found it, multiaddrs are:')
-                    peer.multiaddrs.forEach((ma) => console.log(`${ma.toString()}/p2p/${peer.id.toB58String()}`))
-                }
-                catch (err) {
-                    connectQueueSet.delete(arr[1])
-                    console.error('\n$ Error, findPeer', err)
-                }
+            catch (err) {
+                connectQueueSet.delete(id)
+                console.error('\n$ Error, dial', err)
             }
-            else if (arr[0] === 'connectpeer' || arr[0] === 'c') {
-                let pos = arr[1].lastIndexOf('/')
-                if (pos === -1) {
-                    console.warn('$ Invalid command')
-                    continue
-                }
-                let id = arr[1].substr(pos + 1)
-                if (id === undefined) {
-                    console.warn('$ Invalid command')
-                    continue
-                }
-
-                try {
-                    connectQueueSet.add(id)
-                    await node.dial(arr[1])
-                }
-                catch (err) {
-                    connectQueueSet.delete(id)
-                    console.error('\n$ Error, dial', err)
-                }
+        }
+        else if (arr[0] === 'disconnectpeer' || arr[0] === 'd') {
+            try {
+                await node.hangUp(PeerId.createFromB58String(arr[1]))
             }
-            else if (arr[0] === 'disconnectpeer' || arr[0] === 'd') {
-                try {
-                    await node.hangUp(PeerId.createFromB58String(arr[1]))
-                }
-                catch (err) {
-                    // TODO
-                    console.error('\n$ Error, hangUp', err)
-                }
-            }
-            else if (arr[0] === 'ls') {
-                for (let [peerIdString, peer] of node.peerStore.peers.entries()) {
-                    console.log(`id: ${peerIdString}, peer: `, peer)
-                }
-            }
-            else if (arr[0] === 'sendmsg' || arr[0] === 's') {
+            catch (err) {
                 let info = peerQueueMap.get(arr[1])
                 if (info) {
-                    info.addToQueue(arr[2])
+                    info.abort()
+                    peerQueueMap.delete(arr[1])
                 }
-                else {
-                    console.warn('$ Can not find peer')
-                }
+                console.error('\n$ Error, hangUp', err)
+            }
+        }
+        else if (arr[0] === 'ls') {
+            for (let [peerIdString, peer] of node.peerStore.peers.entries()) {
+                console.log(`id: ${peerIdString}, peer: `, peer)
+            }
+        }
+        else if (arr[0] === 'sendmsg' || arr[0] === 's') {
+            let info = peerQueueMap.get(arr[1])
+            if (info) {
+                info.addToQueue(arr[2])
             }
             else {
-                console.warn('$ Invalid command')
-                continue
+                console.warn('$ Can not find peer')
             }
+        }
+        else {
+            console.warn('$ Invalid command')
+            continue
         }
     }
 }
@@ -176,7 +179,7 @@ const startPrompts = async (node) => {
 
     // Handle messages for the protocol
     await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
-        console.log('$ Receive', protocol, 'from', connection.id)
+        console.log('\n$ Receive', protocol, 'from', connection.id)
         pipe(stream.source, lp.decode(), async (dataStream) => {
             for await (let data of dataStream) {
                 console.log('\n$ Receive message', data.toString())
