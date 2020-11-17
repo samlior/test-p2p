@@ -32,10 +32,10 @@ const startPrompts = async (node) => {
             continue
         }
 
-        if (arr[0] === 'addpeer' || arr[0] === 'a') {
+        if (arr[0] === 'add' || arr[0] === 'a') {
             node.peerStore.addressBook.set(PeerId.createFromB58String(arr[1]), [new Multiaddr(arr[2])])
         }
-        else if (arr[0] === 'findpeer' || arr[0] === 'f') {
+        else if (arr[0] === 'find' || arr[0] === 'f') {
             try {
                 connectPeerSet.add(arr[1])
                 const peer = await node.peerRouting.findPeer(PeerId.createFromB58String(arr[1]))
@@ -48,7 +48,7 @@ const startPrompts = async (node) => {
                 console.error('\n$ Error, findPeer', err)
             }
         }
-        else if (arr[0] === 'connectpeer' || arr[0] === 'c') {
+        else if (arr[0] === 'connect' || arr[0] === 'c') {
             let pos = arr[1].lastIndexOf('/')
             if (pos === -1) {
                 console.warn('$ Invalid command')
@@ -67,19 +67,6 @@ const startPrompts = async (node) => {
             catch (err) {
                 connectPeerSet.delete(id)
                 console.error('\n$ Error, dial', err)
-            }
-        }
-        else if (arr[0] === 'disconnectpeer' || arr[0] === 'd') {
-            try {
-                await node.hangUp(PeerId.createFromB58String(arr[1]))
-            }
-            catch (err) {
-                let peer = peerInfoMap.get(arr[1])
-                if (peer) {
-                    peer.abort()
-                    peerInfoMap.delete(arr[1])
-                }
-                console.error('\n$ Error, hangUp', err)
             }
         }
         else if (arr[0] === 'ls') {
@@ -105,7 +92,7 @@ const startPrompts = async (node) => {
                 console.warn('$ Can not find peer')
             }
         }
-        else if (arr[0] === 'disconnect' || arr[0] === 'ds') {
+        else if (arr[0] === 'disconnect' || arr[0] === 'd') {
             let peer = peerInfoMap.get(arr[1])
             if (peer) {
                 try {
