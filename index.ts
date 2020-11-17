@@ -105,6 +105,22 @@ const startPrompts = async (node) => {
                 console.warn('$ Can not find peer')
             }
         }
+        else if (arr[0] === 'disconnect' || arr[0] === 'ds') {
+            let peer = peerInfoMap.get(arr[1])
+            if (peer) {
+                try {
+                    await peer.jsonRPCNotify('disconnect', [node.peerId._idB58String], true)
+                    await new Promise(r => setTimeout(r, 500))
+                    await node.hangUp(PeerId.createFromB58String(arr[1]))
+                }
+                catch (err) {
+                    console.error('$ Error, disconnect', err)
+                }
+            }
+            else {
+                console.warn('$ Can not find peer')
+            }
+        }
         else if (arr[0] === 'sendmsg' || arr[0] === 's') {
             let peer = peerInfoMap.get(arr[1])
             if (peer) {
@@ -135,8 +151,16 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
                 arr.push(id)
             }
             return arr;
+        case 'disconnect':
+            if (!params) {
+                console.warn('\n$ Invalid request', params)
+                return
+            }
+            let id = params[0]
+            node.hangUp(PeerId.createFromB58String(id)).catch(err => console.error('\n$ Error, hangUp', err))
+            break;
         default:
-            console.log('\n$ Receive unkonw message:', params)
+            console.log('\n$ Receive unkonw message:', method, params)
     }
 }
 
@@ -228,11 +252,18 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
 
 /////////////////////////////////////
 
+type MsgObject = {
+    data: string,
+    resolve?: () => void,
+    reject?: (reason?: any) => void
+};
+
 class Peer {
     private abortFlag: boolean = false;
 
-    private msgQueue: string[] = [];
-    private msgQueueResolve: (msg: string) => void;
+    private msgQueue: MsgObject[] = [];
+    private msgQueueResolve: (msg: MsgObject) => void;
+    private msgQueueReject: (reason?: any) => void;
 
     private jsonRPCId: number = 0
     private jsonRPCRequestMap = new Map<string, [(params: any) => void, (reason?: any) => void, any]>()
@@ -260,6 +291,17 @@ class Peer {
 
     abort() {
         this.abortFlag = true
+        if (this.msgQueueReject) {
+            this.msgQueueReject(new Error('msg queue abort'))
+            this.msgQueueReject = undefined
+            this.msgQueueResolve = undefined
+        }
+        for (let msgObject of this.msgQueue) {
+            if (msgObject.reject) {
+                msgObject.reject(new Error('msg queue abort'))
+            }
+        }
+        this.msgQueue = []
 
         for (let [idString, [resolve, reject, handler]] of this.jsonRPCRequestMap) {
             clearTimeout(handler)
@@ -268,22 +310,47 @@ class Peer {
         this.jsonRPCRequestMap.clear()
     }
 
-    addToQueue(msg: string) {
+    private _addToQueue(msg: MsgObject) {
         if (this.msgQueueResolve) {
             this.msgQueueResolve(msg)
             this.msgQueueResolve = undefined
+            this.msgQueueReject = undefined
         }
         else {
             this.msgQueue.push(msg)
             if (this.msgQueue.length > 10) {
-                console.warn('\n$ Drop message:', this.msgQueue.shift())
+                console.warn('\n$ Drop message:', this.msgQueue.shift().data)
             }
         }
     }
 
+    addToQueue(msgData: string, waiting: boolean = false) {
+        return waiting ? new Promise<void>((resolve, reject) => {
+            let msgObject: MsgObject = {
+                data: msgData,
+                resolve,
+                reject
+            }
+            this._addToQueue(msgObject)
+        }) : this._addToQueue({
+            data: msgData
+        })
+    }
+
     async* makeAsyncGenerator() {
         while (!this.abortFlag) {
-            yield this.msgQueue.length > 0 ? Promise.resolve(this.msgQueue.shift()) : new Promise<string>(r => { this.msgQueueResolve = r })
+            let p = this.msgQueue.length > 0 ?
+                Promise.resolve(this.msgQueue.shift()) :
+                new Promise<MsgObject>((resolve, reject) => {
+                    this.msgQueueResolve = resolve
+                    this.msgQueueReject = reject
+                })
+            yield p.then(msg => {
+                if (msg.resolve) {
+                    msg.resolve()
+                }
+                return msg.data
+            })
         }
     }
 
@@ -306,18 +373,21 @@ class Peer {
         })
     }
 
-    private _jsonRPCNotify(id: string, method?: string, params?: any) {
+    private _jsonRPCNotify(id: string, method?: string, params?: any, waiting: boolean = false) {
         let req = {
             jsonrpc: "2.0",
             id,
             method,
             params
         }
-        this.addToQueue(JSON.stringify(req))
+        return this.addToQueue(JSON.stringify(req), waiting)
     }
 
-    jsonRPCNotify(method: string, params?: any) {
-        this._jsonRPCNotify(`${++this.jsonRPCId}`, method, params)
+    jsonRPCNotify(method: string, params?: any, waiting?: false): void;
+    jsonRPCNotify(method: string, params?: any, waiting?: true): Promise<void>;
+    jsonRPCNotify(method: string, params?: any, waiting?: boolean): Promise<void> | void;
+    jsonRPCNotify(method: string, params?: any, waiting: boolean = false) {
+        return this._jsonRPCNotify(`${++this.jsonRPCId}`, method, params, waiting)
     }
 
     jsonRPCReceiveMsg(data: any) {
