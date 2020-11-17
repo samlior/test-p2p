@@ -70,9 +70,11 @@ const startPrompts = async (node) => {
             }
         }
         else if (arr[0] === 'ls') {
-            // for (let [peerIdString] of node.peerStore.peers.entries()) {
-            //     console.log(peerIdString)
-            // }
+            console.log('peers:')
+            for (let [peerIdString] of node.peerStore.peers.entries()) {
+                console.log(peerIdString)
+            }
+            console.log('connected peers:')
             for (let [id] of peerInfoMap) {
                 console.log(id)
             }
@@ -108,7 +110,7 @@ const startPrompts = async (node) => {
                 console.warn('$ Can not find peer')
             }
         }
-        else if (arr[0] === 'sendmsg' || arr[0] === 's') {
+        else if (arr[0] === 'send' || arr[0] === 's') {
             let peer = peerInfoMap.get(arr[1])
             if (peer) {
                 peer.jsonRPCNotify('echo', arr[2])
@@ -134,8 +136,8 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             break;
         case 'ls':
             let arr = []
-            for (let [id] of peerInfoMap) {
-                arr.push(id)
+            for (let [peerIdString] of node.peerStore.peers.entries()) {
+                arr.push(peerIdString)
             }
             return arr;
         case 'disconnect':
@@ -170,15 +172,27 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
         },
         config:{
             dht: {
-                enabled: true
+                kBucketSize: 20,
+                enabled: true,
+                randomWalk: {
+                    enabled: true, // Allows to disable discovery (enabled by default)
+                    interval: 3e3,
+                    timeout: 10e3
+                }
             },
-            // peerDiscovery: {
+            peerDiscovery: {
+                autoDial: true,
             //     bootstrap: {
             //         interval: 60e3,
             //         enabled: true,
             //         list: ['...']
             //     }
-            // }
+            }
+        },
+        connectionManager: {
+            autoDialInterval: 1000,
+            minConnections: 3,
+            maxConnections: 20
         }
     })
 
@@ -192,17 +206,20 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     
     node.connectionManager.on('peer:connect', (connection) => {
         let id = connection.remotePeer._idB58String
-        if (connectPeerSet.has(id) && !peerInfoMap.has(id)) {
-            connectPeerSet.delete(id)
+        connection.newStream('/wuhu').then(({ stream }) => {
+            let peer = peerInfoMap.get(id)
+            if (peer) {
+                peer.abort()
+                peerInfoMap.delete(id)
+                peer = undefined
+            }
             console.log('\n$ Connected to', id)
-            connection.newStream('/wuhu').then(({ stream }) => {
-                let peer = new Peer(id, handlRPCMsg.bind(undefined, node))
-                peerInfoMap.set(id, peer)
-                peer.pipeStream(stream)
-            }).catch((err) => {
-                console.error('\n$ Error, newStream', err.message)
-            })
-        }
+            peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+            peerInfoMap.set(id, peer)
+            peer.pipeStream(stream)
+        }).catch((err) => {
+            console.error('\n$ Error, newStream', err.message)
+        })
     })
     
     node.connectionManager.on('peer:disconnect', (connection) => {
@@ -220,12 +237,16 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     // Handle messages for the protocol
     await node.handle('/wuhu', ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
-        if (!peerInfoMap.has(id)) {
-            console.log('\n$ Receive', protocol, 'from', id)
-            let peer = new Peer(id, handlRPCMsg.bind(undefined, node))
-            peerInfoMap.set(id, peer)
-            peer.pipeStream(stream)
+        let peer = peerInfoMap.get(id)
+        if (peer) {
+            peer.abort()
+            peerInfoMap.delete(id)
+            peer = undefined
         }
+        console.log('\n$ Receive', protocol, 'from', id)
+        peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+        peerInfoMap.set(id, peer)
+        peer.pipeStream(stream)
     })
     
     // start libp2p
@@ -337,6 +358,8 @@ class Peer {
                     msg.resolve()
                 }
                 return msg.data
+            }).catch(() => {
+                return { length: 0 }
             })
         }
     }
