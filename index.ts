@@ -13,8 +13,6 @@ import prompts from 'prompts';
 
 const peerInfoMap = new Map<string, Peer>()
 
-const connectQueueSet = new Set<string>()
-
 const startPrompts = async (node) => {
     while (true) {
         const response = await prompts({
@@ -38,14 +36,12 @@ const startPrompts = async (node) => {
         }
         else if (arr[0] === 'findpeer' || arr[0] === 'f') {
             try {
-                connectQueueSet.add(arr[1])
                 const peer = await node.peerRouting.findPeer(PeerId.createFromB58String(arr[1]))
 
                 console.log('Found it, multiaddrs are:')
                 peer.multiaddrs.forEach((ma) => console.log(`${ma.toString()}/p2p/${peer.id.toB58String()}`))
             }
             catch (err) {
-                connectQueueSet.delete(arr[1])
                 console.error('\n$ Error, findPeer', err)
             }
         }
@@ -62,11 +58,9 @@ const startPrompts = async (node) => {
             }
 
             try {
-                connectQueueSet.add(id)
                 await node.dial(arr[1])
             }
             catch (err) {
-                connectQueueSet.delete(id)
                 console.error('\n$ Error, dial', err)
             }
         }
@@ -177,26 +171,19 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
         console.error('\n$ Error', err.message)
     })
     
-    node.connectionManager.on('peer:connect', async (connection) => {
+    node.connectionManager.on('peer:connect', (connection) => {
         let id = connection.remotePeer._idB58String
-        console.log('\n$ Connected to', id)
+        if (!peerInfoMap.has(id)) {
+            console.log('\n$ Connected to', id)
 
-        if (connectQueueSet.has(id)) {
-            connectQueueSet.delete(id)
-            if (!peerInfoMap.has(id)) {
-                connection.newStream('/wuhu').then(({ stream }) => {
-                    let peer = new Peer(id)
-                    peerInfoMap.set(id, peer)
-                    pipe(peer.makeAsyncGenerator(), stream.sink);
-                    pipe(stream.source, async (source) => {
-                        for await (let data of source) {
-                            peer.jsonRPCReceiveMsg(data, handlRPCMsg.bind(undefined, node, peer))
-                        }
-                    })
-                }).catch((err) => {
-                    console.error('\n$ Error, newStream', err.message)
-                })
-            }
+            connection.newStream('/wuhu').then(({ stream }) => {
+                console.log('create stream', id)
+                let peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+                peerInfoMap.set(id, peer)
+                peer.pipeStream(stream)
+            }).catch((err) => {
+                console.error('\n$ Error, newStream', err.message)
+            })
         }
     })
     
@@ -214,18 +201,20 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     // Handle messages for the protocol
     await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
-        console.log('\n$ Receive', protocol, 'from', id)
-        let peer = peerInfoMap.get(id)
-        if (!peer) {
-            peer = new Peer(id)
-            peerInfoMap.set(id, peer)
-        }
-        pipe(peer.makeAsyncGenerator(), stream.sink);
-        pipe(stream.source, async (source) => {
-            for await (let data of source) {
-                peer.jsonRPCReceiveMsg(data, handlRPCMsg.bind(undefined, node, peer))
+        if (!peerInfoMap.has(id)) {
+            console.log('\n$ Receive', protocol, 'from', id)
+
+            let peer = peerInfoMap.get(id)
+            if (!peer) {
+                console.log('new stream', id)
+                peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+                peerInfoMap.set(id, peer)
             }
-        })
+            else {
+                console.log('reuse stream', id)
+            }
+            peer.pipeStream(stream)
+        }
     })
     
     // start libp2p
@@ -247,15 +236,26 @@ class Peer {
 
     private jsonRPCId: number = 0
     private jsonRPCRequestMap = new Map<string, [(params: any) => void, (reason?: any) => void, any]>()
+    private jsonRPCMsgHandler: (peer: Peer, method: string, params?: any) => Promise<any> | any 
 
     private peerId: string
 
-    constructor(peerId: string) {
+    constructor(peerId: string, jsonRPCMsgHandler: (peer: Peer, method: string, params?: any) => Promise<any> | any) {
         this.peerId = peerId
+        this.jsonRPCMsgHandler = jsonRPCMsgHandler
     }
 
     getPeerId() {
         return this.peerId
+    }
+
+    async pipeStream(stream: any) {
+        pipe(this.makeAsyncGenerator(), stream.sink);
+        pipe(stream.source, async (source) => {
+            for await (let data of source) {
+                this.jsonRPCReceiveMsg(data)
+            }
+        })
     }
 
     abort() {
@@ -320,7 +320,7 @@ class Peer {
         this._jsonRPCNotify(`${++this.jsonRPCId}`, method, params)
     }
 
-    jsonRPCReceiveMsg(data: any, handleMsg: (method: string, params?: any) => Promise<any> | any) {
+    jsonRPCReceiveMsg(data: any) {
         try {
             let obj = JSON.parse(data)
             let info = this.jsonRPCRequestMap.get(obj.id)
@@ -331,7 +331,7 @@ class Peer {
                 this.jsonRPCRequestMap.delete(obj.id)
             }
             else {
-                let result = handleMsg(obj.method, obj.params)
+                let result = this.jsonRPCMsgHandler(this, obj.method, obj.params)
                 if (result !== undefined) {
                     if (result.then === undefined) {
                         result = Promise.resolve(result)
