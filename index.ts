@@ -12,6 +12,7 @@ import process from 'process';
 import prompts from 'prompts';
 
 const peerInfoMap = new Map<string, Peer>()
+const connectPeerSet = new Set<string>()
 
 const startPrompts = async (node) => {
     while (true) {
@@ -36,12 +37,14 @@ const startPrompts = async (node) => {
         }
         else if (arr[0] === 'findpeer' || arr[0] === 'f') {
             try {
+                connectPeerSet.add(arr[1])
                 const peer = await node.peerRouting.findPeer(PeerId.createFromB58String(arr[1]))
 
                 console.log('Found it, multiaddrs are:')
                 peer.multiaddrs.forEach((ma) => console.log(`${ma.toString()}/p2p/${peer.id.toB58String()}`))
             }
             catch (err) {
+                connectPeerSet.delete(arr[1])
                 console.error('\n$ Error, findPeer', err)
             }
         }
@@ -58,9 +61,11 @@ const startPrompts = async (node) => {
             }
 
             try {
+                connectPeerSet.add(id)
                 await node.dial(arr[1])
             }
             catch (err) {
+                connectPeerSet.delete(id)
                 console.error('\n$ Error, dial', err)
             }
         }
@@ -173,9 +178,9 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     
     node.connectionManager.on('peer:connect', (connection) => {
         let id = connection.remotePeer._idB58String
-        if (!peerInfoMap.has(id)) {
+        if (connectPeerSet.has(id) && !peerInfoMap.has(id)) {
+            connectPeerSet.delete(id)
             console.log('\n$ Connected to', id)
-
             connection.newStream('/wuhu').then(({ stream }) => {
                 console.log('create stream', id)
                 let peer = new Peer(id, handlRPCMsg.bind(undefined, node))
@@ -199,20 +204,12 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     })
 
     // Handle messages for the protocol
-    await node.handle('/wuhu', async ({ connection, stream, protocol }) => {
+    await node.handle('/wuhu', ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         if (!peerInfoMap.has(id)) {
             console.log('\n$ Receive', protocol, 'from', id)
-
-            let peer = peerInfoMap.get(id)
-            if (!peer) {
-                console.log('new stream', id)
-                peer = new Peer(id, handlRPCMsg.bind(undefined, node))
-                peerInfoMap.set(id, peer)
-            }
-            else {
-                console.log('reuse stream', id)
-            }
+            let peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+            peerInfoMap.set(id, peer)
             peer.pipeStream(stream)
         }
     })
