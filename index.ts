@@ -83,8 +83,11 @@ const startPrompts = async (node) => {
             }
         }
         else if (arr[0] === 'ls') {
-            for (let [peerIdString] of node.peerStore.peers.entries()) {
-                console.log(peerIdString)
+            // for (let [peerIdString] of node.peerStore.peers.entries()) {
+            //     console.log(peerIdString)
+            // }
+            for (let [id] of peerInfoMap) {
+                console.log(id)
             }
         }
         else if (arr[0] === 'fetch') {
@@ -128,8 +131,8 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             break;
         case 'ls':
             let arr = []
-            for (let [peerIdString] of node.peerStore.peers.entries()) {
-                arr.push(peerIdString)
+            for (let [id] of peerInfoMap) {
+                arr.push(id)
             }
             return arr;
         default:
@@ -182,7 +185,6 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             connectPeerSet.delete(id)
             console.log('\n$ Connected to', id)
             connection.newStream('/wuhu').then(({ stream }) => {
-                console.log('create stream', id)
                 let peer = new Peer(id, handlRPCMsg.bind(undefined, node))
                 peerInfoMap.set(id, peer)
                 peer.pipeStream(stream)
@@ -201,6 +203,7 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             peer.abort()
             peerInfoMap.delete(id)
         }
+        node.hangUp(connection.remotePeer).catch(err => console.error('\n$ Error, hangUp', err))
     })
 
     // Handle messages for the protocol
