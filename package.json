@@ -9,6 +9,7 @@
   "license": "ISC",
   "dependencies": {
     "@types/node": "^14.14.7",
+    "cids": "^1.0.2",
     "it-length-prefixed": "^3.1.0",
     "it-to-stream": "^0.1.2",
     "libp2p": "^0.29.3",
@@ -19,6 +20,7 @@
     "libp2p-noise": "^2.0.1",
     "libp2p-websockets": "^0.14.0",
     "multiaddr": "^8.1.1",
+    "multihashing-async": "^2.0.1",
     "peer-id": "^0.14.2",
     "prompts": "^2.4.0",
     "ts-node": "^9.0.0",

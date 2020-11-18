@@ -9,16 +9,26 @@ const KadDHT = require('libp2p-kad-dht')
 const GossipSub = require('libp2p-gossipsub')
 const uint8ArrayFromString = require('uint8arrays/from-string')
 const uint8ArrayToString = require('uint8arrays/to-string')
+const CID = require('cids')
+const multihashing = require('multihashing-async')
 // const Bootstrap = require('libp2p-bootstrap')
 
 import process from 'process';
 import prompts from 'prompts';
 
 const libp2pProtocol = '/wuhuprotocol'
-const libp2pTopic = '/wuhutopic'
+const newBlockTopic = '/newBlock'
 
 const peerInfoMap = new Map<string, Peer>()
 const connectPeerSet = new Set<string>()
+
+const fakeDatabase = new Map<string, any>()
+
+const stringToCID = async (str: string) => {
+    const bytes = new TextEncoder().encode(str)
+    const hash = await multihashing(bytes, 'sha2-256')
+    return new CID(1, 'keccak-256', hash)
+}
 
 const startPrompts = async (node) => {
     while (true) {
@@ -125,24 +135,15 @@ const startPrompts = async (node) => {
                 console.warn('$ Can not find peer')
             }
         }
-        else if (arr[0] === 'publish' || arr[0] === 'p') {
-            node.pubsub.publish(libp2pTopic, uint8ArrayFromString(arr[1] ? arr[1] : 'this is a gossip message!'))
-        }
-        else if (arr[0] === 'provide' || arr[0] === 'po') {
-            await node.contentRouting.put(uint8ArrayFromString(arr[1]), uint8ArrayFromString(arr[2]))
-        }
-        else if (arr[0] === 'getmany' || arr[0] === 'g') {
-            try {
-                console.log('GetMany Result:', (await node.contentRouting.getMany(uint8ArrayFromString(arr[1]), Number(arr[2]), { timeout: 1e3 })).map(p => {
-                    return {
-                        from: p.from._idB58String,
-                        val: uint8ArrayToString(p.val)
-                    }
-                }))
+        else if (arr[0] === 'mine' || arr[0] === 'm') {
+            let block = {
+                height: 100,
+                blockHash: arr[1],
+                transactions: ['tx1', 'tx2', 'tx3']
             }
-            catch (err) {
-                console.error('\n$ Error, getMany', err)
-            }
+            fakeDatabase.set(block.blockHash, block)
+            await node.contentRouting.provide(await stringToCID(block.blockHash))
+            await node.pubsub.publish(newBlockTopic, uint8ArrayFromString(block.blockHash))
         }
         else {
             console.warn('$ Invalid command')
@@ -173,8 +174,41 @@ const handlJSONRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             let id = params[0]
             node.hangUp(PeerId.createFromB58String(id)).catch(err => console.error('\n$ Error, hangUp', err))
             break;
+        case 'getBlockByHash':
+            if (!params) {
+                console.warn('\n$ Invalid request', params)
+                return
+            }
+            let hash = params[0]
+            let result = fakeDatabase.get(hash)
+            return result
         default:
             console.log('\n$ Receive unkonw message:', method, params)
+    }
+}
+
+const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) => {
+    console.log('\n$ Receive gossip, topic', topic)
+    switch (topic) {
+        case newBlockTopic:
+            try {
+                let blockHash = uint8ArrayToString(msg.data)
+                for await (const provider of node.contentRouting.findProviders(await stringToCID(blockHash), { timeout: 3e3, maxNumProviders: 3 })) {
+                    let id = provider.id._idB58String
+                    let peer = peerInfoMap.get(id)
+                    if (peer) {
+                        let block = await peer.jsonRPCRequest('getBlockByHash', [blockHash])
+                        console.log('Get block from', id, block)
+                        return
+                    }
+                }
+            }
+            catch (err) {
+                console.error('\n$ Error, handle gossip msg', topic, err)
+            }
+            break; 
+        default:
+            console.log('\n$ Receive unkonw gossip:', topic, msg)
     }
 }
 
@@ -288,10 +322,8 @@ const handlJSONRPCMsg = (node, peer: Peer, method: string, params?: any) => {
         console.log(ma.toString() + '/p2p/' + peerkey.toB58String())
     })
 
-    node.pubsub.on(libp2pTopic, (msg) => {
-        console.log(`\n$ Node received: ${uint8ArrayToString(msg.data)}`)
-    })
-    await node.pubsub.subscribe(libp2pTopic)
+    node.pubsub.on(newBlockTopic, handleGossipMsg.bind(undefined, node, newBlockTopic))
+    await node.pubsub.subscribe(newBlockTopic)
 
     startPrompts(node)
 })();
