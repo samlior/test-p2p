@@ -128,6 +128,22 @@ const startPrompts = async (node) => {
         else if (arr[0] === 'publish' || arr[0] === 'p') {
             node.pubsub.publish(libp2pTopic, uint8ArrayFromString(arr[1] ? arr[1] : 'this is a gossip message!'))
         }
+        else if (arr[0] === 'provide' || arr[0] === 'po') {
+            await node.contentRouting.put(uint8ArrayFromString(arr[1]), uint8ArrayFromString(arr[2]))
+        }
+        else if (arr[0] === 'getmany' || arr[0] === 'g') {
+            try {
+                console.log('GetMany Result:', (await node.contentRouting.getMany(uint8ArrayFromString(arr[1]), Number(arr[2]), { timeout: 1e3 })).map(p => {
+                    return {
+                        from: p.from._idB58String,
+                        val: uint8ArrayToString(p.val)
+                    }
+                }))
+            }
+            catch (err) {
+                console.error('\n$ Error, getMany', err)
+            }
+        }
         else {
             console.warn('$ Invalid command')
             continue
