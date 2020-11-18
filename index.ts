@@ -372,9 +372,6 @@ class Peer {
     pipeReadStream(stream: any) {
         this.reading = true
         pipe(stream.source, async (source) => {
-            // for await (let data of source) {
-            //     this.jsonRPCReceiveMsg(data)
-            // }
             const it = source[Symbol.asyncIterator]()
             while (!this.abortFlag) {
                 const result = await Promise.race([this.abortPromise, it.next()])
@@ -397,7 +394,6 @@ class Peer {
     }
 
     abort() {
-        console.log('ab')
         this.abortFlag = true
         this.abortResolve()
         if (this.msgQueueReject) {
