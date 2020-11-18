@@ -6,6 +6,9 @@ const Multiaddr = require('multiaddr')
 const PeerId = require('peer-id')
 const pipe = require('it-pipe')
 const KadDHT = require('libp2p-kad-dht')
+const GossipSub = require('libp2p-gossipsub')
+const uint8ArrayFromString = require('uint8arrays/from-string')
+const uint8ArrayToString = require('uint8arrays/to-string')
 // const Bootstrap = require('libp2p-bootstrap')
 
 import process from 'process';
@@ -119,6 +122,9 @@ const startPrompts = async (node) => {
                 console.warn('$ Can not find peer')
             }
         }
+        else if (arr[0] === 'publish' || arr[0] === 'p') {
+            node.pubsub.publish('wuhutopic', uint8ArrayFromString('this is a gossip message!'))
+        }
         else {
             console.warn('$ Invalid command')
             continue
@@ -168,6 +174,7 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             connEncryption: [NOISE],
             streamMuxer: [MPLEX],
             dht: KadDHT,
+            pubsub: GossipSub
             // peerDiscovery: [Bootstrap]
         },
         config:{
@@ -187,6 +194,12 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             //         enabled: true,
             //         list: ['...']
             //     }
+            },
+            pubsub: {                     // The pubsub options (and defaults) can be found in the pubsub router documentation
+                enabled: true,
+                emitSelf: true,             // whether the node should emit to self on publish
+                signMessages: true,         // if messages should be signed
+                strictSigning: true         // if message signing should be required
             }
         },
         connectionManager: {
@@ -255,6 +268,12 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     node.multiaddrs.forEach((ma) => {
         console.log(ma.toString() + '/p2p/' + peerkey.toB58String())
     })
+
+    node.pubsub.on('wuhutopic', (msg) => {
+        console.log(`\n$ Node received: ${uint8ArrayToString(msg.data)}`)
+    })
+    await node.pubsub.subscribe('wuhutopic')
+
     startPrompts(node)
 })();
 

@@ -13,6 +13,7 @@
     "it-to-stream": "^0.1.2",
     "libp2p": "^0.29.3",
     "libp2p-bootstrap": "^0.12.1",
+    "libp2p-gossipsub": "^0.7.0",
     "libp2p-kad-dht": "^0.20.1",
     "libp2p-mplex": "^0.10.1",
     "libp2p-noise": "^2.0.1",
@@ -21,6 +22,7 @@
     "peer-id": "^0.14.2",
     "prompts": "^2.4.0",
     "ts-node": "^9.0.0",
-    "typescript": "^4.0.5"
+    "typescript": "^4.0.5",
+    "uint8arrays": "^1.1.0"
   }
 }
