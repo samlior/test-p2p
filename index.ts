@@ -14,6 +14,9 @@ const uint8ArrayToString = require('uint8arrays/to-string')
 import process from 'process';
 import prompts from 'prompts';
 
+const libp2pProtocol = '/wuhuprotocol'
+const libp2pTopic = '/wuhutopic'
+
 const peerInfoMap = new Map<string, Peer>()
 const connectPeerSet = new Set<string>()
 
@@ -123,7 +126,7 @@ const startPrompts = async (node) => {
             }
         }
         else if (arr[0] === 'publish' || arr[0] === 'p') {
-            node.pubsub.publish('wuhutopic', uint8ArrayFromString('this is a gossip message!'))
+            node.pubsub.publish(libp2pTopic, uint8ArrayFromString(arr[1] ? arr[1] : 'this is a gossip message!'))
         }
         else {
             console.warn('$ Invalid command')
@@ -134,7 +137,7 @@ const startPrompts = async (node) => {
 
 /////////////////////////////////////////
 
-const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
+const handlJSONRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     console.log('\n$ Receive request, method', method)
     switch (method) {
         case 'echo':
@@ -182,13 +185,13 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
                 kBucketSize: 20,
                 enabled: true,
                 randomWalk: {
-                    enabled: true, // Allows to disable discovery (enabled by default)
+                    enabled: false, // Allows to disable discovery (enabled by default)
                     interval: 3e3,
                     timeout: 10e3
                 }
             },
             peerDiscovery: {
-                autoDial: true,
+                autoDial: false,
             //     bootstrap: {
             //         interval: 60e3,
             //         enabled: true,
@@ -197,13 +200,13 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             },
             pubsub: {                     // The pubsub options (and defaults) can be found in the pubsub router documentation
                 enabled: true,
-                emitSelf: true,             // whether the node should emit to self on publish
+                emitSelf: false,            // whether the node should emit to self on publish
                 signMessages: true,         // if messages should be signed
                 strictSigning: true         // if message signing should be required
             }
         },
         connectionManager: {
-            autoDialInterval: 1000,
+            autoDialInterval: 3e3,
             minConnections: 3,
             maxConnections: 20
         }
@@ -219,7 +222,7 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     
     node.connectionManager.on('peer:connect', (connection) => {
         let id = connection.remotePeer._idB58String
-        connection.newStream('/wuhu').then(({ stream }) => {
+        connection.newStream(libp2pProtocol).then(({ stream }) => {
             let peer = peerInfoMap.get(id)
             if (peer) {
                 peer.abort()
@@ -227,7 +230,7 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
                 peer = undefined
             }
             console.log('\n$ Connected to', id)
-            peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+            peer = new Peer(id, handlJSONRPCMsg.bind(undefined, node))
             peerInfoMap.set(id, peer)
             peer.pipeStream(stream)
         }).catch((err) => {
@@ -248,7 +251,7 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
     })
 
     // Handle messages for the protocol
-    await node.handle('/wuhu', ({ connection, stream, protocol }) => {
+    await node.handle(libp2pProtocol, ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         let peer = peerInfoMap.get(id)
         if (peer) {
@@ -257,7 +260,7 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
             peer = undefined
         }
         console.log('\n$ Receive', protocol, 'from', id)
-        peer = new Peer(id, handlRPCMsg.bind(undefined, node))
+        peer = new Peer(id, handlJSONRPCMsg.bind(undefined, node))
         peerInfoMap.set(id, peer)
         peer.pipeStream(stream)
     })
@@ -269,10 +272,10 @@ const handlRPCMsg = (node, peer: Peer, method: string, params?: any) => {
         console.log(ma.toString() + '/p2p/' + peerkey.toB58String())
     })
 
-    node.pubsub.on('wuhutopic', (msg) => {
+    node.pubsub.on(libp2pTopic, (msg) => {
         console.log(`\n$ Node received: ${uint8ArrayToString(msg.data)}`)
     })
-    await node.pubsub.subscribe('wuhutopic')
+    await node.pubsub.subscribe(libp2pTopic)
 
     startPrompts(node)
 })();
