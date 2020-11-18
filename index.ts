@@ -16,7 +16,7 @@ const multihashing = require('multihashing-async')
 import process from 'process';
 import prompts from 'prompts';
 
-const libp2pProtocol = '/wuhuprotocol'
+const libp2pProtocol = '/wuhuProtocol'
 const newBlockTopic = '/newBlock'
 
 const peerInfoMap = new Map<string, Peer>()
@@ -274,15 +274,16 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
         let id = connection.remotePeer._idB58String
         connection.newStream(libp2pProtocol).then(({ stream }) => {
             let peer = peerInfoMap.get(id)
-            if (peer) {
-                peer.abort()
-                peerInfoMap.delete(id)
-                peer = undefined
+            if (!peer || peer.isWriting()) {
+                if (peer) {
+                    peer.abort()
+                    peerInfoMap.delete(id)
+                }
+                peer = new Peer(id, handlJSONRPCMsg.bind(undefined, node))
+                peerInfoMap.set(id, peer)
             }
             console.log('\n$ Connected to', id)
-            peer = new Peer(id, handlJSONRPCMsg.bind(undefined, node))
-            peerInfoMap.set(id, peer)
-            peer.pipeStream(stream)
+            peer.pipeWriteStream(stream)
         }).catch((err) => {
             console.error('\n$ Error, newStream', err.message)
         })
@@ -304,15 +305,16 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
     await node.handle(libp2pProtocol, ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         let peer = peerInfoMap.get(id)
-        if (peer) {
-            peer.abort()
-            peerInfoMap.delete(id)
-            peer = undefined
+        if (!peer || peer.isReading()) {
+            if (peer) {
+                peer.abort()
+                peerInfoMap.delete(id)
+            }
+            peer = new Peer(id, handlJSONRPCMsg.bind(undefined, node))
+            peerInfoMap.set(id, peer)
         }
         console.log('\n$ Receive', protocol, 'from', id)
-        peer = new Peer(id, handlJSONRPCMsg.bind(undefined, node))
-        peerInfoMap.set(id, peer)
-        peer.pipeStream(stream)
+        peer.pipeReadStream(stream)
     })
     
     // start libp2p
@@ -337,6 +339,8 @@ type MsgObject = {
 };
 
 class Peer {
+    private abortResolve: () => void
+    private abortPromise = new Promise<void>((resolve) => { this.abortResolve = resolve })
     private abortFlag: boolean = false;
 
     private msgQueue: MsgObject[] = [];
@@ -348,6 +352,8 @@ class Peer {
     private jsonRPCMsgHandler: (peer: Peer, method: string, params?: any) => Promise<any> | any 
 
     private peerId: string
+    private writing: boolean = false
+    private reading: boolean = false
 
     constructor(peerId: string, jsonRPCMsgHandler: (peer: Peer, method: string, params?: any) => Promise<any> | any) {
         this.peerId = peerId
@@ -358,17 +364,42 @@ class Peer {
         return this.peerId
     }
 
-    async pipeStream(stream: any) {
+    pipeWriteStream(stream: any) {
+        this.writing = true
         pipe(this.makeAsyncGenerator(), stream.sink);
+    }
+
+    pipeReadStream(stream: any) {
+        this.reading = true
         pipe(stream.source, async (source) => {
-            for await (let data of source) {
-                this.jsonRPCReceiveMsg(data)
+            // for await (let data of source) {
+            //     this.jsonRPCReceiveMsg(data)
+            // }
+            const it = source[Symbol.asyncIterator]()
+            while (!this.abortFlag) {
+                const result = await Promise.race([this.abortPromise, it.next()])
+                if (this.abortFlag)
+                    break
+                const { done, value } = result  
+                if (done)
+                    break
+                this.jsonRPCReceiveMsg(value)
             }
         })
     }
 
+    isWriting() {
+        return this.writing
+    }
+
+    isReading() {
+        return this.reading
+    }
+
     abort() {
+        console.log('ab')
         this.abortFlag = true
+        this.abortResolve()
         if (this.msgQueueReject) {
             this.msgQueueReject(new Error('msg queue abort'))
             this.msgQueueReject = undefined
