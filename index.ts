@@ -155,6 +155,12 @@ const startPrompts = async (node) => {
             await node.contentRouting.provide(await stringToCID(block.blockHash))
             await node.pubsub.publish(newBlockTopic, uint8ArrayFromString(JSON.stringify(publishBlockInfo)))
         }
+        else if (arr[0] === 'lsblock') {
+            console.log('localBlockHeight', localBlockHeight)
+            for (let [hash, block] of fakeDatabase) {
+                console.log(block)
+            }
+        }
         else {
             console.warn('$ Invalid command')
             continue
