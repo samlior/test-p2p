@@ -22,6 +22,7 @@ const newBlockTopic = '/newBlock'
 const peerInfoMap = new Map<string, Peer>()
 const connectPeerSet = new Set<string>()
 
+let localBlockHeight = 0
 const fakeDatabase = new Map<string, any>()
 
 const stringToCID = async (str: string) => {
@@ -137,13 +138,22 @@ const startPrompts = async (node) => {
         }
         else if (arr[0] === 'mine' || arr[0] === 'm') {
             let block = {
-                height: 100,
+                height: Number(arr[2]),
                 blockHash: arr[1],
                 transactions: ['tx1', 'tx2', 'tx3']
             }
+            if (block.height <= localBlockHeight) {
+                console.warn('$ New block must higher than local block')
+                continue
+            }
+            let publishBlockInfo = {
+                height: block.height,
+                blockHash: block.blockHash,
+            }
+            localBlockHeight = block.height
             fakeDatabase.set(block.blockHash, block)
             await node.contentRouting.provide(await stringToCID(block.blockHash))
-            await node.pubsub.publish(newBlockTopic, uint8ArrayFromString(block.blockHash))
+            await node.pubsub.publish(newBlockTopic, uint8ArrayFromString(JSON.stringify(publishBlockInfo)))
         }
         else {
             console.warn('$ Invalid command')
@@ -192,13 +202,21 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
     switch (topic) {
         case newBlockTopic:
             try {
-                let blockHash = uint8ArrayToString(msg.data)
-                for await (const provider of node.contentRouting.findProviders(await stringToCID(blockHash), { timeout: 3e3, maxNumProviders: 3 })) {
+                let publishBlockInfo = JSON.parse(uint8ArrayToString(msg.data))
+                if (publishBlockInfo.height <= localBlockHeight) {
+                    console.warn('\n$ Gossip receive block height', publishBlockInfo.height, 'but less or equal than local block height', localBlockHeight)
+                    return
+                }
+                for await (const provider of node.contentRouting.findProviders(await stringToCID(publishBlockInfo.blockHash), { timeout: 3e3, maxNumProviders: 3 })) {
                     let id = provider.id._idB58String
                     let peer = peerInfoMap.get(id)
                     if (peer) {
-                        let block = await peer.jsonRPCRequest('getBlockByHash', [blockHash])
-                        console.log('Get block from', id, block)
+                        let block = await peer.jsonRPCRequest('getBlockByHash', [publishBlockInfo.blockHash])
+                        console.log('\n$ Get block from', id, block)
+                        if (block.height > localBlockHeight) {
+                            localBlockHeight = block.height
+                            fakeDatabase.set(block.blockHash, block)
+                        }
                         return
                     }
                 }
@@ -235,13 +253,13 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
                 kBucketSize: 20,
                 enabled: true,
                 randomWalk: {
-                    enabled: false, // Allows to disable discovery (enabled by default)
+                    enabled: true, // Allows to disable discovery (enabled by default)
                     interval: 3e3,
                     timeout: 10e3
                 }
             },
             peerDiscovery: {
-                autoDial: false,
+                autoDial: true,
             //     bootstrap: {
             //         interval: 60e3,
             //         enabled: true,
