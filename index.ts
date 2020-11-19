@@ -16,14 +16,12 @@ const multihashing = require('multihashing-async')
 import process from 'process';
 import prompts from 'prompts';
 
-const libp2pProtocol = '/wuhuProtocol'
-const newBlockTopic = '/newBlock'
+const JSONRPCProtocol = '/JSONRPCProtocol'
+const NewBlockTopic = '/NewBlock'
 
 const peerInfoMap = new Map<string, Peer>()
-const connectPeerSet = new Set<string>()
-
-let localBlockHeight = 0
 const fakeDatabase = new Map<string, any>()
+let localBlockHeight = 0
 
 const stringToCID = async (str: string) => {
     const bytes = new TextEncoder().encode(str)
@@ -54,14 +52,12 @@ const startPrompts = async (node) => {
         }
         else if (arr[0] === 'find' || arr[0] === 'f') {
             try {
-                connectPeerSet.add(arr[1])
                 const peer = await node.peerRouting.findPeer(PeerId.createFromB58String(arr[1]))
 
                 console.log('Found it, multiaddrs are:')
                 peer.multiaddrs.forEach((ma) => console.log(`${ma.toString()}/p2p/${peer.id.toB58String()}`))
             }
             catch (err) {
-                connectPeerSet.delete(arr[1])
                 console.error('\n$ Error, findPeer', err)
             }
         }
@@ -78,11 +74,9 @@ const startPrompts = async (node) => {
             }
 
             try {
-                connectPeerSet.add(id)
                 await node.dial(arr[1])
             }
             catch (err) {
-                connectPeerSet.delete(id)
                 console.error('\n$ Error, dial', err)
             }
         }
@@ -153,7 +147,7 @@ const startPrompts = async (node) => {
             localBlockHeight = block.height
             fakeDatabase.set(block.blockHash, block)
             await node.contentRouting.provide(await stringToCID(block.blockHash))
-            await node.pubsub.publish(newBlockTopic, uint8ArrayFromString(JSON.stringify(publishBlockInfo)))
+            await node.pubsub.publish(NewBlockTopic, uint8ArrayFromString(JSON.stringify(publishBlockInfo)))
         }
         else if (arr[0] === 'lsblock') {
             console.log('localBlockHeight', localBlockHeight)
@@ -206,11 +200,11 @@ const handlJSONRPCMsg = (node, peer: Peer, method: string, params?: any) => {
 const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) => {
     console.log('\n$ Receive gossip, topic', topic)
     switch (topic) {
-        case newBlockTopic:
+        case NewBlockTopic:
             try {
                 let publishBlockInfo = JSON.parse(uint8ArrayToString(msg.data))
                 if (publishBlockInfo.height <= localBlockHeight) {
-                    console.warn('\n$ Gossip receive block height', publishBlockInfo.height, 'but less or equal than local block height', localBlockHeight)
+                    console.warn('\n$ Gossip receive block height', publishBlockInfo.height, ', but less or equal than local block height', localBlockHeight)
                     return
                 }
                 for await (const provider of node.contentRouting.findProviders(await stringToCID(publishBlockInfo.blockHash), { timeout: 3e3, maxNumProviders: 3 })) {
@@ -259,24 +253,24 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
                 kBucketSize: 20,
                 enabled: true,
                 randomWalk: {
-                    enabled: true, // Allows to disable discovery (enabled by default)
+                    enabled: false, // Allows to disable discovery (enabled by default)
                     interval: 3e3,
                     timeout: 10e3
                 }
             },
             peerDiscovery: {
                 autoDial: true,
-            //     bootstrap: {
-            //         interval: 60e3,
-            //         enabled: true,
-            //         list: ['...']
-            //     }
+                // bootstrap: {
+                //     interval: 60e3,
+                //     enabled: true,
+                //     list: ['...']
+                // }
             },
-            pubsub: {                     // The pubsub options (and defaults) can be found in the pubsub router documentation
+            pubsub: {
                 enabled: true,
-                emitSelf: false,            // whether the node should emit to self on publish
-                signMessages: true,         // if messages should be signed
-                strictSigning: true         // if message signing should be required
+                emitSelf: false,
+                signMessages: true,
+                strictSigning: true
             }
         },
         connectionManager: {
@@ -296,7 +290,7 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
     
     node.connectionManager.on('peer:connect', (connection) => {
         let id = connection.remotePeer._idB58String
-        connection.newStream(libp2pProtocol).then(({ stream }) => {
+        connection.newStream(JSONRPCProtocol).then(({ stream }) => {
             let peer = peerInfoMap.get(id)
             if (!peer || peer.isWriting()) {
                 if (peer) {
@@ -326,7 +320,7 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
     })
 
     // Handle messages for the protocol
-    await node.handle(libp2pProtocol, ({ connection, stream, protocol }) => {
+    await node.handle(JSONRPCProtocol, ({ connection, stream, protocol }) => {
         let id = connection.remotePeer._idB58String
         let peer = peerInfoMap.get(id)
         if (!peer || peer.isReading()) {
@@ -348,8 +342,8 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
         console.log(ma.toString() + '/p2p/' + peerkey.toB58String())
     })
 
-    node.pubsub.on(newBlockTopic, handleGossipMsg.bind(undefined, node, newBlockTopic))
-    await node.pubsub.subscribe(newBlockTopic)
+    node.pubsub.on(NewBlockTopic, handleGossipMsg.bind(undefined, node, NewBlockTopic))
+    await node.pubsub.subscribe(NewBlockTopic)
 
     startPrompts(node)
 })();
