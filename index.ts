@@ -11,6 +11,8 @@ const uint8ArrayFromString = require('uint8arrays/from-string')
 const uint8ArrayToString = require('uint8arrays/to-string')
 const CID = require('cids')
 const multihashing = require('multihashing-async')
+const MulticastDNS = require('libp2p-mdns')
+const TCP = require('libp2p-tcp')
 // const Bootstrap = require('libp2p-bootstrap')
 
 import process from 'process';
@@ -165,7 +167,7 @@ const startPrompts = async (node) => {
 /////////////////////////////////////////
 
 const handlJSONRPCMsg = (node, peer: Peer, method: string, params?: any) => {
-    console.log('\n$ Receive request, method', method)
+    console.log('\n$ Receive jsonrpc request, method', method)
     switch (method) {
         case 'echo':
             console.log('\n$ Receive echo message:', params)
@@ -238,14 +240,15 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
     const node = await Libp2p.create({
         peerId: peerkey,
         addresses: {
-            listen: [`/ip4/127.0.0.1/tcp/0/ws`]
+            listen: ['/ip4/0.0.0.0/tcp/0', '/ip4/0.0.0.0/tcp/0/ws']
         },
         modules: {
-            transport: [WebSockets],
+            transport: [TCP, WebSockets],
             connEncryption: [NOISE],
             streamMuxer: [MPLEX],
             dht: KadDHT,
-            pubsub: GossipSub
+            pubsub: GossipSub,
+            peerDiscovery: [MulticastDNS]
             // peerDiscovery: [Bootstrap]
         },
         config:{
@@ -253,13 +256,17 @@ const handleGossipMsg = async (node, topic: string, msg: { data: Uint8Array }) =
                 kBucketSize: 20,
                 enabled: true,
                 randomWalk: {
-                    enabled: false, // Allows to disable discovery (enabled by default)
+                    enabled: true,
                     interval: 3e3,
                     timeout: 10e3
                 }
             },
             peerDiscovery: {
                 autoDial: true,
+                [MulticastDNS.tag]: {
+                    interval: 1e3,
+                    enabled: true
+                }
                 // bootstrap: {
                 //     interval: 60e3,
                 //     enabled: true,
